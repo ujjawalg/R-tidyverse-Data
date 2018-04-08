@@ -1,0 +1,373 @@
+---
+title: "Kickstarter Analysis"
+author: "Ujjawal Gupta"
+date: "April 4, 2018"
+output:
+html_document: yes
+keep_md: yes
+---
+
+``````{r Setup, include=FALSE, results='hide', warning=FALSE}
+library(knitr)
+
+opts_chunk$set(cache.path="cache/",
+                   cache=FALSE,
+                   echo=TRUE,
+                   message=FALSE,
+                   warning=FALSE)
+```
+
+```{r import libs, echo = TRUE}
+library(tidyverse)
+library(readr)
+library(ggthemes)
+library(sqldf)
+library(tidytext)
+library(tm)
+library(quanteda)
+library(dplyr)
+library(leaflet)
+library(RColorBrewer)
+library(wordcloud)
+library(readability)
+```
+## 1. Identifying Successful Projects
+### a) Success by Category
+
+To identify the most successful categories I took pledged amount and state as the deciding factor.
+
+- There were around 10,000 duplicate IDs which were removed.
+
+- The projects whose status was either successful or live were taken into consideration.
+
+- Technology came out to be the most successful category followed by Games and Design.
+
+```{r Q1a, echo=TRUE}
+kickstarter <- read.csv("kickstarter_projects.csv", stringsAsFactors = FALSE)
+
+kickstarter <- kickstarter %>% filter (! duplicated(kickstarter$id))
+
+kickstarter$achievement_ratio <- ((kickstarter$pledged/kickstarter$goal)*100)
+
+kick1 <- sqldf("select top_category as Categories, avg(pledged) as Average from kickstarter where state = 'successful' or state = 'live' group by top_category")
+
+Ans1a <- ggplot(data = kick1, aes(x = reorder(Categories, -Average), y = Average, fill =Average))+
+  geom_bar(stat= "identity",show.legend = FALSE)+
+  xlab("")+
+  ylab("")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.text.x = element_text(angle=90, size=rel(1), hjust=1))+ ggtitle("Most successful categories")
+
+Ans1a
+```
+
+### BONUS ONLY: b) Success by Location
+
+For the Bonus Question I downloaded a dataset with Longituted and Latitude values of all US cities. ANd joined them on city name for the same state. There were multiple city names that were same but were located in different states.
+
+
+ - **Bonus1** We calculated the total number of successful projects by state and found that california leads in that regard followed by New York. 
+ 
+ - **Bonus2** A map 50 most successful cities was plotted along with all the successful cities in US.
+
+```{r Q1bonus, echo=TRUE}
+uscities <- read.csv("uscitiesv1.3.csv")
+
+kicklocation <- sqldf("Select city,state_name, lat, lng, state, pledged, achievement_ratio from kickstarter k join uscities u on k.location_town = u.city where k.location_state = u.state_id")
+
+kicksuccess <- sqldf("Select state_name, count(state) as Number from kicklocation where state = 'successful' or state = 'live' group by state_name order by Number DESC Limit 10")
+
+Bonus1 <- ggplot(kicksuccess, aes(x = reorder(state_name, -Number), y=Number)) + 
+  geom_point(size=3) + 
+  geom_segment(aes(x=state_name, xend=state_name, y=0, yend=Number)) +
+  xlab("")+
+  ylab("")+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.text.x = element_text(angle=90, size=rel(1), hjust=1))+ ggtitle("Top 10 States by successful Kickstarter projects")
+
+Bonus1
+
+kicklocation1 <- sqldf("Select city,state_name, lat, lng, avg(pledged) as Number from kicklocation where state = 'successful' or state = 'live' group by city order by Number DESC Limit 50")
+
+kicklocation2 <- sqldf(("Select city,state_name, lat, lng, avg(pledged) as Number from kicklocation where state = 'successful' or state = 'live' group by city"))
+
+successIcons <- icons(
+  iconUrl = "success.png",
+  iconWidth = 15, iconHeight = 15,
+  iconAnchorX = 7.5, iconAnchorY = 7.5)
+
+Bonus2 <- leaflet() %>%
+  addProviderTiles("OpenStreetMap.Mapnik",options = providerTileOptions(attribution = ""))%>%
+  addCircleMarkers(data=kicklocation2,lng = ~lng, lat = ~lat, radius = 5, stroke = 2, opacity = 0.7, 
+                   popup=~paste("City Name:",kicklocation2$city,"<br>",
+                                "State:",kicklocation2$state_name,"<br/>",                                                "Avg Pledged Amount:",kicklocation2$Number,"<br/>"),clusterOptions = markerClusterOptions())%>%
+  addMarkers(data=kicklocation1,lng = ~lng, lat = ~lat,
+             icon = successIcons,
+             popup=~paste("City Name:",kicklocation1$city,"<br>",
+                          "State:",kicklocation1$state_name,"<br/>",
+                          "Avg Pledged Amount:",kicklocation1$Number,"<br/>"))%>%
+  setView(lng = -95.7129, lat = 37.0902, zoom = 3)%>%
+  addEasyButton(easyButton(
+    icon="fa-globe", 
+    title="New York City",
+    onClick=JS("function(btn, map){ map.setZoom(3); }")))
+
+Bonus2
+```
+
+## 2. Writing your success story
+### a) Cleaning the Text and Word Cloud
+
+For this i took Achievent ratio to calculate top and bottom 1000 projects. Followed by text cleaning and then a word cloud of most popular words from successful projects was made.
+
+Although Text stemming and stem completion could have been done , but due to some unresolvable issues that part of text cleaning was ignored for this analysis.
+
+```{r Q2a, echo = TRUE}
+
+top1000 <- kickstarter%>%top_n(1000, achievement_ratio)
+bottom1000 <- kickstarter%>%top_n(-1000, achievement_ratio)
+bottom1000<- head(bottom1000,1000)
+
+top1000_corpus <- Corpus(VectorSource(top1000$blurb))
+bottom1000_corpus <- Corpus(VectorSource(bottom1000$blurb))
+
+
+clean <- function(corpus){
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removeWords, c(stopwords("en")))  
+  corpus <- tm_map(corpus, removeNumbers)
+  
+  corpus <- tm_map(corpus, stripWhitespace)
+  return(corpus)
+}
+
+top1000_corpus_clean <- clean(top1000_corpus)
+bottom1000_corpus_clean <- clean(bottom1000_corpus)
+
+#top1000_stemmed <- tm_map(top1000_corpus_clean, stemDocument)
+#bottom1000_stemmed <- tm_map(bottom1000_corpus_clean, stemDocument)
+
+stemCompletion <- function(x, dictionary) {
+  x <- unlist(strsplit(as.character(x), " "))
+  x <- x[x != ""]
+  x <- stemCompletion(x, dictionary=dictionary)
+  x <- paste(x, sep="", collapse=" ")
+  PlainTextDocument(stripWhitespace(x))
+}
+
+#top1000_comp <- lapply(top1000_stemmed, stemCompletion, 
+                     #dictionary=top1000_corpus_clean)
+
+#DTM
+top1000_dtm <- DocumentTermMatrix(top1000_corpus_clean, control = list(weighting = function(x) weightTfIdf(x, normalize = T)))
+top1000_m <- as.matrix(top1000_dtm)
+
+bottom1000_dtm <- DocumentTermMatrix(bottom1000_corpus_clean, control = list(weighting = function(x) weightTfIdf(x, normalize = T)))
+
+
+#TDM
+top1000_tdm <- TermDocumentMatrix(top1000_corpus_clean)
+top1000_tdm1 <- as.matrix(top1000_tdm)
+
+
+top1000_td<- tidy(top1000_dtm)
+head(top1000_td)
+
+bottom1000_td<- tidy(bottom1000_dtm)
+head(bottom1000_td)
+
+top1000_tf_idf <-  top1000_td %>%
+  bind_tf_idf(term, document, count) %>%  
+  arrange(desc(tf_idf)) 
+
+bottom1000_tf_idf <-  bottom1000_td %>%
+  bind_tf_idf(term, document, count) %>%  
+  arrange(desc(tf_idf))
+
+bottom1000_tf_idf
+
+#word cloud
+set.seed(3)
+wordcloud(top1000_tf_idf$term, top1000_tf_idf$tf, max.words = 50, colors = c("#a1d99b", "#74c476", "#41ab5d", "#238b45", "#006d2c", "#00441b"), scale =c(2,.5))
+
+
+```
+
+
+### b) Success in words
+
+Common words were found and using plotrix library a pyramid plot was made.
+
+```{r Q2b, echo= TRUE}
+
+top1000_tf_idf$state<- "successful"
+bottom1000_tf_idf$state <- "unsuccessful"
+
+top10_tf_idf<- head(top1000_tf_idf,10)
+bottom10_tf_idf<- head(bottom1000_tf_idf,10)
+
+all_tf_idf<- rbind(top10_tf_idf,bottom10_tf_idf)
+
+combined <- merge(top1000_tf_idf,bottom1000_tf_idf,by="term")
+combined_final<- combined[!duplicated(combined$term), ]
+combined_final<-arrange(combined_final,desc(count.x))
+combined_final<- head(combined_final,20)
+
+library(plotrix)
+
+Ans2b <- pyramid.plot(combined_final$count.x, combined_final$count.y,labels = combined_final$term,top.labels = c("successful", " ", "unsuccessful"),main = "Common Words",lxcol=c("#2ca25f"),rxcol=c("#de2d26"),gap=2,unit = NULL, labelcex=0.7)
+
+Ans2b
+```
+
+### c) Simplicity as a virtue
+
+A scatter plot using Flesch.Kincaid vs Achievement ratio was made. We found out that most successful projects kept Text complexity to average.
+
+
+```{r Q2c, echo= TRUE}
+#Ans2c
+
+require(quanteda)
+FRE_corpus <- corpus(top1000_corpus)
+
+FRE_top1000 <- textstat_readability(FRE_corpus,measure =c('Flesch.Kincaid'))
+
+FRE <- data_frame(FK = FRE_top1000$Flesch.Kincaid,
+    achievement_ratio = top1000$achievement_ratio)
+
+Ans2c<- ggplot(data=FRE, aes(y=achievement_ratio /1000 , x= FK, color = FK ))+
+  geom_point(alpha=0.7, size=3,show.legend = FALSE)+ geom_smooth(method="loess", se=F,show.legend = FALSE) + 
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")+
+  theme_bw() +
+  xlab("FRE")+
+  ylab("Achievement Ratio")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+Ans2c
+```
+
+
+## 3. Sentiment
+### a) Stay positive
+
+Through scatter plot we found that most successful projects had a positive tone to their summary. Although having a negative tone does not mean that a project cannot be successful.
+
+```{r Q3a, echo= TRUE}
+#Ques 6
+ pos <- read.table("positive-words.txt", as.is=T)
+neg <- read.table("negative-words.txt", as.is=T)
+
+sentiment <- function(words=c("really great good stuff bad")){
+  require(quanteda)
+  tok <- quanteda::tokens(words)
+  pos.count <- sum(tok[[1]]%in%pos[,1])
+  neg.count <- sum(tok[[1]]%in%neg[,1])
+  out <- (pos.count - neg.count)/(pos.count+neg.count)
+  return(out)
+}
+
+for(i in 1:1000)
+{top1000$tone[i] <- sentiment(top1000_corpus[[i]]$content)}
+
+Ans3a<- ggplot(data=top1000[is.finite(top1000$tone), ], aes(x=achievement_ratio/1000 , y= tone, color = tone, na.rm = FALSE))+
+  geom_point(alpha=0.7, size=3,show.legend = FALSE,na.rm = FALSE)+ geom_smooth(method="gam", se=F,show.legend = FALSE,na.rm = FALSE) + 
+  scale_color_gradient(low = "#ffeda0", high = "#2ca25f")+
+  theme_bw() +
+  ylab("Tone")+
+  xlab("Achievement Ratio")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+Ans3a
+```
+
+### b) Positive vs negative
+
+Combining both top and bottom 1000 projects a comparison cloud was made. Although we see that negative words are more common.
+
+
+```{r Q3b, echo= TRUE}
+
+#Ques 3b
+
+for(i in 1:1000)
+{bottom1000$tone[i] <- sentiment(bottom1000_corpus[[i]]$content)}
+
+topnbottom <- rbind(top1000, bottom1000)
+
+topnbottom$PosNeg<- ifelse(((as.numeric(as.character(topnbottom$tone))) < 0), "Negative", "Positive")
+
+topnbottom1 <- na.omit(topnbottom)
+
+topnbottom1_pos <- paste(topnbottom1$blurb[topnbottom1$PosNeg =="Positive"],collapse = " ")
+topnbottom1_neg <- paste(topnbottom1$blurb[topnbottom1$PosNeg =="Negative"],collapse = " ")
+comb <- c(topnbottom1_pos, topnbottom1_neg)
+
+## Referred: https://www.kaggle.com/elvinouyang/identifying-the-buzzwords-in-kickstarter-part-ii/code
+
+create_clean_corpus <- function(text_vector){
+  text_corpus_clean <- VCorpus(VectorSource(text_vector))
+  text_corpus_clean <- tm_map(text_corpus_clean, removePunctuation)
+  text_corpus_clean <- tm_map(text_corpus_clean, content_transformer(tolower))
+  text_corpus_clean <- tm_map(text_corpus_clean, removeNumbers)
+  text_corpus_clean <- tm_map(text_corpus_clean, removeWords,c(stopwords()))
+  text_corpus_clean <- tm_map(text_corpus_clean, removePunctuation)
+  text_corpus_clean <- tm_map(text_corpus_clean, stripWhitespace)
+  return(text_corpus_clean)
+}
+
+comb_clean <- create_clean_corpus(comb)
+combined_tdm <- TermDocumentMatrix(comb_clean, control=list(weighting = weightTfIdf))
+colnames(combined_tdm) <- c("Positive", "Negative")
+combined_tdm <- as.matrix(combined_tdm)
+
+set.seed(25)
+comparison.cloud(combined_tdm, colors = c("green", "red"), max.words = 100,scale=c(1,1.8))
+```
+
+### c) Get in their mind
+
+It is seen that more successful projects have higher conotation of positive emotions as joy and trust but also with negative emotions as fear and sadness. However it seems the tone of anger reduces.
+
+
+```{r Q3c, echo= TRUE}
+
+myvars <- c("blurb", "pledged", "achievement_ratio")
+top1000new <- top1000[myvars]
+
+top1000new <- top1000new %>% 
+  mutate (number = row_number())
+
+
+top1000new_td <- top1000new %>% 
+  unnest_tokens(word, blurb)
+
+top1000new_td <- top1000new_td %>% 
+  anti_join(stop_words)
+
+sentiment_nrc <- top1000new_td %>% 
+  inner_join(get_sentiments("nrc")) %>% 
+  count(number, sentiment) %>%
+  spread(sentiment, n, fill=0) %>%
+  setNames(c(names(.)[1],paste0('nrc_', names(.)[-1]))) %>%
+  mutate(score_nrc = nrc_positive - nrc_negative) %>%
+  ungroup()
+
+top1000new_full <- full_join(top1000new, sentiment_nrc)  %>% 
+  mutate_each(funs(replace(., which(is.na(.)), 0)), starts_with("nrc"))
+
+Ans3c <- top1000new_full %>%
+  gather(emotion, intensity,starts_with("nrc_")) %>%
+  mutate(emotion = substring(emotion,5)) %>%
+  filter(!emotion %in% c("positive", "negative")) %>%
+  ggplot(aes(x=achievement_ratio/1000, y=intensity)) +
+  geom_smooth(se = FALSE,method = 'gam') + facet_wrap(~emotion, nrow = 2)+
+  scale_color_brewer(palette="Dark2")+
+    xlab("Achievement Ratio")+
+    ylab("Intensity")+
+    theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.text.x = element_text(angle=90, size=rel(1), hjust=1))+ ggtitle("Different Emotions with respect to Achievement Ratio")
+
+Ans3c
+```
